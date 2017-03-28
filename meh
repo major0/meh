@@ -1,0 +1,543 @@
+#!/bin/sh
+#
+# Copyright (C) 2017 Mark Ferrell
+#
+# My Eleventh Hour testing framework
+
+# We always use 'set -e' because it works "as expected" on the vast majority of
+# POSIX shells out there .. BASH being the only exception. That said, it hurts
+# nothing to use 'set -e' and then ignore its existance.
+set -e
+
+# BusyBox may have builtins which can prevent 'command -v' from returning the
+# expected output, this can be detected by asking 'command -v' for the path to
+# 'sh', which in busybox returns as 'sh'.
+if which sh > /dev/null 2>&1; then
+	__meh_hascmd() { test -e "$(which "${1}" 2> /dev/null)"; }
+	__meh_pathcmd() { __meh_hascmd "${1}" && which "${1}"; }
+elif whence -p sh > /dev/null 2>&1; then
+	__meh_hascmd() { test -e "$(whence -p "${1}" 2> /dev/null)"; }
+	__meh_pathcmd() { __meh_hascmd "${1}" && whence -p "${1}"; }
+elif type -P sh > /dev/null 2>&1; then
+	__meh_hascmd() { test -e "$(type -P "${1}" 2> /dev/null)"; }
+	__meh_pathcmd() { __meh_hascmd "${1}" && type -P "${1}"; }
+else
+	__meh_hascmd() { test -e "$(command -v "${1}" 2> /dev/null)"; }
+	__meh_pathcmd() { __meh_hascmd "${1}" && command -v "${1}"; }
+fi
+
+# Allow 'readonly' to work, even if it wont do what we want
+if ! $(readonly __MEH_JUNK >/dev/null 2>&1); then alias readonly=' ';fi
+
+# Find the shell-flavor we are using
+if ! ${ZSH_VERSION+false}; then
+	readonly MEH_SHELL='zsh'
+	emulate ksh
+	zmodload zsh/mathfunc
+elif ! ${KSH_VERSION+false}; then
+	readonly MEH_SHELL='ksh'
+	alias type > /dev/null 2>&1 || alias type='whence -v '
+elif ! ${BASH_VERSION+false}; then
+	readonly MEH_SHELL='bash'
+else
+	readonly MEH_SHELL='sh'
+fi
+
+# Always request the shell obey POSIX.  Required to support 'alias' w/in a
+# script when using BASH.
+readonly POSIXLY_CORRECT='posix'
+
+##
+# It tends to be faster (and more portable) to define these vs searching the
+# PATH and then fork/exec'ing them.
+if ! __meh_hascmd let; then
+	let() { for __let_expression; do command eval test '$((${__let_expression}))' -ne 0;done; }
+fi
+dirname()
+{
+	case "${1}" in (.*);; (/*);; (*) set -- "./${1}";; esac
+	set -- "${1%/*}"
+	test -z "${1}" && set -- '/'
+	echo "${1}"
+}
+basename()
+{
+	set -- "${1%/}"
+	set -- "${1##*/}"
+	test -z "${1}" && set -- '/'
+	echo "${1}"
+}
+readlink()
+{
+	test -h "${1}" || return 1
+	expr "$(ls -ld "${1}")" : '.*-> \(.*\)$'
+}
+realpath()
+{
+	IFS='/' set -- $(echo "$*"|sed -e 's,/,\n,g')
+	__realpath=
+	for __rp_entry; do
+		__realpath="${__realpath}/${__rp_entry}"
+		while test -h "${__rp_entry}"; do
+			__rp_link="$(readlink "${__realpath}")"
+			case "${__rp_link}" in
+			(/*)	__realpath="${__rp_link}";;
+			(*)	__realpath="$(dirname "${__realpath}")/${__rp_link}";;
+			esac
+		done
+		unset __rp_link
+	done
+	set -- "${__realpath}"
+	unset __rp_entry
+	test -z "${__realpath}" || printf '%s\n' "${__realpath}"
+	unset __realpath
+}
+
+##
+# meh library routines
+
+# These where defined earlier
+alias hascmd='__meh_hascmd '
+alias meh.hascmd='__meh_hascmd '
+alias meh.pathcmd='__meh_pathcmd '
+
+# the compliment to hascmd
+__meh_hasfunc() { type "${1}" 2>&1 | grep -q 'function$'; }
+alias meh.hasfunc='__meh_hasfunc '
+
+__meh_optarg()
+{
+	if test "${1#*=}" != "${1}"; then
+		set -- "${1}" "${2}" "${1#*=}"
+	else
+		case "${2}" in (-*);; (*) set -- "${1}" "${2}" "${2}";; esac
+		OPTIND="$((${OPTIND} + 1))"
+	fi
+	test -z "${3}" || echo "${3}"
+}
+alias meh.optarg='__meh_optarg '
+
+__meh_getarg()
+{
+	set -- "${1}" "${2}" "$(__meh_optarg "${@}")"
+	if test -z "${3}"; then
+		__meh_usage 'meh' "option '${1%=*}' requires an argument"
+		return 1
+	fi
+	echo "${3}"
+}
+alias meh.getarg='__meh_getarg '
+
+__meh_shiftarg()
+{
+	: "__meh_shiftarg: shell=${MEH_SHELL}, index=${OPTIND}"
+	case "${MEH_SHELL}" in
+	(bash|zsh) # Bash and Zsh don't index $0
+		echo "$((${OPTIND} - 1))";;
+	(ksh)	# All flavours of Ksh as well as Dash and BusyBox's /bin/sh
+		# count $0 as part of the index position
+		echo "$((${OPTIND} - 2))";;
+	(*)	# "MOST" /bin/sh shells obey ksh's behavior..
+		if test "$((${OPTIND} - 2))" -ge '0'; then
+			echo "$((${OPTIND} - 2))"
+		else # except /bin/sh found in *BSD
+			echo 0
+		fi;;
+	esac
+	OPTIND=1
+}
+alias meh.shiftarg='__meh_shiftarg '
+
+__meh_error() { echo "error: $*" >&2; }
+alias meh.error='__meh_error '
+alias error='__meh_error '
+
+__meh_die() { __meh_error "$*"; exit 1; }
+alias meh.die='__meh_die '
+alias die='__meh_die '
+
+__meh_exit()
+{
+	: "__meh_exit($*)[$#]"
+	set -- ${__meh_atexit_funcs}
+	unset __meh_atexit_funcs
+	while test "$#" -gt '0'; do
+		"${1}"
+		shift
+	done
+}
+__meh_atexit()
+{
+	: "__meh_atexit($*)[$#]"
+	if ! __meh_hasfunc "${1}"; then
+		trap '' 0
+		die "not a function '${1}'"
+	fi
+	__meh_atexit_funcs="$1 ${__meh_atexit_funcs}"
+	trap __meh_exit 0 TERM HUP INT
+}
+alias meh.atexit='__meh_atexit '
+
+__meh_leaked_vars_filter()
+{
+	: "__meh_leaked_sh_var($*)[$#]"
+	for __meh_leaked_sh_var; do
+		case "${__meh_leaked_sh_var}" in
+		(POSIXLY_CORRECT) continue;;
+		(MEH_CALL_STACK) continue;;
+		(MEH_SHELL)	continue;;
+		(MEH_ONLY)	continue;;
+		(OPTARG)	continue;; # zsh
+		(A__z)		continue;; # ksh
+
+		# bash
+		(BASH_EXECUTION_STRING|FUNCNAME|PIPESTATUS) continue;;
+		esac
+		echo "${__meh_leaked_sh_var}"
+	done
+	unset __meh_leaked_sh_var
+}
+__meh_leaked_vars()
+{
+	: "__meh_leaked_vars($*)[$#]"
+	shift $#
+	set -- $(__meh_leaked_vars_filter $( ("${MEH_SHELL}" -c 'set';set;env)|sed -n 's/=.*//p'|sort|uniq -u))
+	unset __meh_leaked_shell_vars
+	if test "$#" -ne '0'; then
+		echo "## MEH SET VARIABLES: $#"
+		for __meh_leaked_var; do
+			echo "${__meh_leaked_var}"
+		done
+		unset __meh_leaked_var
+	fi
+}
+
+__meh_ran()
+{
+	: "__meh_ran($*)[$#]"
+	__meh_ran_test="$(printf '%s' "$1"|tr '[/. ]' '_')"
+	shift $#
+	set -- "${__meh_ran_test}" "$@"
+	unset __meh_ran_test
+	: "__meh_ran($#): $*"
+
+	case "$#" in
+	(1)	eval "__meh_${1}_ran" > /dev/null 2>&1 || return 1;;
+	(2)	eval "__meh_${1}_ran() { :; }";;
+	(*)	return 1;;
+	esac
+
+	# We only get this far if $# == 2
+	if __meh_hasfunc __meh_ran; then
+		eval "__meh_ran() { echo '$(__meh_ran) ${1}'; }"
+	else
+		eval "__meh_ran() { echo '${1}'; }"
+	fi
+	return 0
+}
+
+__meh_run_test()
+{
+	: "__meh_run_test($*)[$#]"
+
+	if ! test -d "${1}"; then
+		if ! test -f "${1%.t}.t"; then
+			die "invalid test '${1}'"
+		fi
+	fi
+
+	# Only allow a test to be run once
+	! __meh_ran "${1}" || return 0
+
+	# run a directory of tests
+	# note: we borrow 'while' here purely so we can break out of nested
+	# conditions
+	while test -d "${1}"; do
+		# Constrain our tests to those specified in __control__
+		if test -f "${1}/__control__.t"; then
+			set -- "${1}/__control__.t"
+			break # out of the while loop
+		fi
+		# Test everything in the directory
+		for __meh_run_test_case in "${1}"/*.t; do
+			test -f "${__meh_run_test_case}" || continue
+			set -- "${1}" "${__meh_run_test_case}"
+			__meh_run_test "${2}"
+		done
+		unset __meh_run_test_case
+
+		# Test subdirectories
+		for __meh_run_test_dir in "${1}"/*; do
+			test -d "${__meh_run_test_dir}" || continue
+			set -- "${1}" "${__meh_run_test_dir}"
+			__meh_run_test "${2}"
+		done
+		unset __meh_run_test_dir
+
+		# Return after running the directory
+		__meh_ran "${1}" "${2}"
+		return 0
+	done
+
+	# name file opwd
+	set -- "${1%.t}.t" "$(basename "${1}")" "${PWD}"
+	cd "$(dirname ${1})"
+
+	# name file opwd old_stack
+	# FIXME log which test we are running
+	set -- "${@}" "${MEH_CALL_STACK}"
+	MEH_CALL_STACK="${MEH_CALL_STACK} ${1}"
+	__meh_ran "${1}" "${3}"
+	. "./${2}"
+	__meh_run_status="$?"
+	MEH_CALL_STACK="${4}"
+	# FIXME log our test results
+	cd "${3}"
+	set -- "${__meh_run_status}" "${1}"
+	unset __meh_run_status
+
+	return "${1}"
+}
+
+__meh_run()
+{
+	: "__meh_run($*)[$#]"
+	while test "$#" -gt '0'; do
+		# OpenBSD's /bin/sh will trigger an exit if we do this test
+		# while 'set -e' is active.
+		set +e
+		if ! eval "${1}_ran" 2>/dev/null; then
+			if ! __meh_run_test "${1}"; then
+				set -- $?
+				break
+			fi
+		fi
+		set -e
+		shift
+	done
+	return "$#"
+}
+alias test.dir='__meh_run '
+alias test.run='__meh_run '
+
+__meh_test_cmd()
+{
+	: "__meh_test_cmd($*)[$#]"
+
+	if test "$#" -eq '0'; then
+		error 'no test description'
+		echo "stack: ${MEH_CALL_STACK}"
+		exit 1
+	fi
+	if test "$#" -le '1'; then
+		error 'no test status'
+		echo "stack: ${MEH_CALL_STACK}"
+		exit 1
+	fi
+
+	__meh_test_cmd_dsc="${1}"
+	__meh_test_cmd_ret="${2}"
+	shift 2
+
+	# FIXME capture and log output
+	set +e
+	"${@}" > /dev/null 2>&1
+	set -- "${__meh_test_cmd_dsc}" "${__meh_test_cmd_ret}" "$?" "${@}"
+	MEH_TEST_TOTAL="$((${MEH_TEST_TOTAL} + 1))"
+	set -e
+
+	if test "${2}" -eq "${3}"; then
+		printf "%d: %s: %s\n" "${MEH_TEST_TOTAL}" "${__meh_test_cmd_dsc}" 'OK'
+		MEH_TEST_SUCCESS="$((${MEH_TEST_SUCCESS} + 1))"
+		return 0
+	fi
+
+	printf "%d: %s: %d != %d\n" "${MEH_TEST_TOTAL}" "${__meh_test_cmd_dsc}" "${2}" "${3}"
+	MEH_TEST_FAILURE="$((${MEH_TEST_FAILURE} + 1))"
+	return 1
+}
+alias test.command='__meh_test_cmd '
+alias test.cmd='__meh_test_cmd '
+
+__meh_test_out()
+{
+	: "__meh_test_out($*)[$#]"
+
+	if test "$#" -eq '0'; then
+		error 'no test description'
+		echo "stack: ${MEH_CALL_STACK}"
+		exit 1
+	fi
+	if test "$#" -le '1'; then
+		error 'no test status'
+		echo "stack: ${MEH_CALL_STACK}"
+		exit 1
+	fi
+
+	__meh_test_out_dsc="${1}"
+	__meh_test_out_expr="${2}"
+	shift 2
+
+	# FIXME capture and log output
+	set +e
+	__meh_test_out_log="$("${@}" 2>&1)"
+	set -- "${__meh_test_out_dsc}" "${__meh_test_out_expr}" "$?" "${@}"
+	MEH_TEST_TOTAL="$((${MEH_TEST_TOTAL} + 1))"
+	set -e
+
+	if expr "${__meh_test_out_log}" : "${2}" > /dev/null 2>&1; then
+		printf "%d: %s: %s\n" "${MEH_TEST_TOTAL}" "${__meh_test_out_dsc}" 'OK'
+		MEH_TEST_SUCCESS="$((${MEH_TEST_SUCCESS} + 1))"
+		return 0
+	fi
+
+	printf "%d: %s: pattern not found '%s'\n" "${MEH_TEST_TOTAL}" "${__meh_test_out_dsc}" "${2}"
+	MEH_TEST_FAILURE="$((${MEH_TEST_FAILURE} + 1))"
+	return 1
+}
+alias test.output='__meh_test_out '
+alias test.out='__meh_test_out '
+
+__meh_version() { echo 0.01; }
+__meh_usage()
+{
+	: "__meh_usage($*)[$#]"
+	if test "$#" -gt '0'; then
+		error "${2}"
+		echo "try '${1} --help'" >&2
+		return 1
+	fi
+	sed -e 's/	//' << EOF
+	usage: meh [options] [file]
+
+	 options:
+	   -T, --testdir=TESTDIR	Path to tests [default: tests]
+	   -v, --verbose		Enable verbose execution
+	   -V, --version		Display meh version
+	   -h, --help			Display this help
+
+	 shell opts:
+	   -x				Trace script execution
+	   --report-set			Report set non-environ variables at termination
+
+EOF
+	exit 0
+}
+alias meh.usage='__meh_usage '
+
+if test -z "${MEH_TESTDIR}"; then
+	MEH_TESTDIR="$(realpath "${PWD}/tests")"
+	MEH_TESTDIR="${MEH_PATH%/}"
+	export MEH_TESTDIR
+fi
+
+MEH_IMPORTS=
+__meh_atexit_funcs=
+MEH_COMMAND=
+while getopts ':hVL:I:T:vxc:' __meh_arg; do
+	case "${__meh_arg}" in
+	##
+	# If we are here then everyting went as expected and all
+	# arguments to options have been supplied and the world is
+	# beautiful
+	(h)	__meh_usage; exit 0;;
+	(V)	echo "meh version $(__meh_version)"; exit 0;;
+	(T)	test -e "${OPTARG}" || die "no such directory '${OPTARG}'"
+		test -d "${OPTARG}" || die "not a directory '${OPTARG}'"
+		MEH_PATH="${OPTARG}";;
+
+	# Support some traditional sh arguments.
+	(v)	set -v;;
+	(x)	set -x;;
+
+	# Missing optional arguments
+	(:)	case "${OPTARG}" in
+		(*) __meh_usage 'meh' "option '-${OPTARG}' requires an argument"
+		    exit 1;;
+		esac;;
+
+	## Long Argument handling
+	# POSIX: Each time it is invoked, the getopts utility shall
+	# place the value of the next option in the shell variable
+	# specified by the 'name' operand and the index of the next
+	# argument to be processed in the shell variable OPTIND.
+	#
+	# NOTE - During error handling Bash and Zsh "appear" to point
+	# OPTIND at the argument that had the error, a behavior not
+	# decribed by POSIX.
+	(\?)	: "extended options: index=${OPTIND}, arg='${__meh_arg}', optarg='${OPTARG}'"
+		shift $(__meh_shiftarg)
+		: "extended arg: '${1}'"
+
+		case "${1}" in
+		(--help)
+			__meh_usage; exit 0;;
+
+		(--testdir|--testdir=*)
+			OPTARG="$(__meh_getarg "${1}" "${2}")"
+			test -e "${OPTARG}" || die "no such directory '${OPTARG}'"
+			test -d "${OPTARG}" || die "not a directory '${OPTARG}'"
+			MEH_TESTDIR="${OPTARG}";;
+
+		(--report-set)
+			readonly MEH_REPORT_SET=true;;
+
+		##
+		# Our standard argument handling
+		(--)	OPTIND="$((${OPTIND} + 1))"; break;;
+		(-*)	__meh_usage 'meh' "unknown option '${1}'"
+			exit 1;;
+		(*)	break;;
+		esac
+
+		shift ${OPTIND}
+		OPTIND=1;;
+	esac
+done
+unset __meh_arg
+shift $((${OPTIND} - 1))
+OPTIND=1
+unset OPTARG
+
+# Register the leak detector first so that it is called last.
+${MEH_REPORT_SET+false} || __meh_atexit __meh_leaked_vars
+unset MEH_REPORT_SET
+
+# Initialize meh
+unset -f __meh_version
+
+##
+# 1. All tests exist in tests/, unless someone specifies an explicit path on
+#    the CLI.
+# 2. Process all directories as test "groups".
+# 3. Test ordering is generally "unsorted" unless a directory contains a
+#     __control__.t file (used to customize the order).
+MEH_TEST_TOTAL=0
+MEH_TEST_SUCCESS=0
+MEH_TEST_FAILURE=0
+if test "$#" -eq '0'; then
+	__meh_run 'tests'
+else
+	for __unit_test; do
+		! test -f "${__unit_test%.t}.t" || continue
+		! test -d "${__unit_test}" || continue
+		die "file such file or directory '${unit_test}'"
+	done
+	unset unit_test
+
+	while test "$#" -gt '0'; do
+		if test -f "${1%.t}.t"; then
+			__meh_run "${1%.t}.t"
+		elif test -d "${1}"; then
+			__meh_run "${1}"
+		else
+			die "file/directory disapeared '${1}'"
+		fi
+		shift
+	done
+fi
+
+echo "Pass: ${MEH_TEST_SUCCESS}"
+echo "Fail: ${MEH_TEST_FAILURE}"
+echo "Total: ${MEH_TEST_TOTAL}"
+# vim: filetype=sh
