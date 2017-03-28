@@ -20,6 +20,10 @@ My Eleventh Hour (meh) is a test-automation tool written in POSIX shell.
 
  - Support `not` conditional for `test.command`
 
+ - Support for automatic 'Tested-By' commit integration w/ git-hook.
+
+ - Support for tracking test results in [git-track](http://github.com/major0/gitrack)
+
 ## Installation
 
 Copy the 'meh' script into your project and start writting tests in `tests/`
