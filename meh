@@ -359,9 +359,9 @@ __meh_test_cmd()
 alias test.command='__meh_test_cmd '
 alias test.cmd='__meh_test_cmd '
 
-__meh_test_out()
+__meh_test_pat()
 {
-	: "__meh_test_out($*)[$#]"
+	: "__meh_test_pat($*)[$#]"
 
 	if test "$#" -eq '0'; then
 		error 'no test description'
@@ -374,29 +374,29 @@ __meh_test_out()
 		exit 1
 	fi
 
-	__meh_test_out_dsc="${1}"
-	__meh_test_out_expr="${2}"
+	__meh_test_pat_dsc="${1}"
+	__meh_test_pat_expr="${2}"
 	shift 2
 
 	# FIXME capture and log output
 	set +e
-	__meh_test_out_log="$("${@}" 2>&1)"
-	set -- "${__meh_test_out_dsc}" "${__meh_test_out_expr}" "$?" "${@}"
+	__meh_test_pat_log="$("${@}" 2>&1)"
+	set -- "${__meh_test_pat_dsc}" "${__meh_test_pat_expr}" "$?" "${@}"
 	MEH_TEST_TOTAL="$((${MEH_TEST_TOTAL} + 1))"
 	set -e
 
-	if expr "${__meh_test_out_log}" : "${2}" > /dev/null 2>&1; then
-		printf "%d: %s: %s\n" "${MEH_TEST_TOTAL}" "${__meh_test_out_dsc}" 'OK'
+	if expr "${__meh_test_pat_log}" : "${2}" > /dev/null 2>&1; then
+		printf "%d: %s: %s\n" "${MEH_TEST_TOTAL}" "${__meh_test_pat_dsc}" 'OK'
 		MEH_TEST_SUCCESS="$((${MEH_TEST_SUCCESS} + 1))"
 		return 0
 	fi
 
-	printf "%d: %s: pattern not found '%s'\n" "${MEH_TEST_TOTAL}" "${__meh_test_out_dsc}" "${2}"
+	printf "%d: %s: pattern not found '%s'\n" "${MEH_TEST_TOTAL}" "${__meh_test_pat_dsc}" "${2}"
 	MEH_TEST_FAILURE="$((${MEH_TEST_FAILURE} + 1))"
 	return 1
 }
-alias test.output='__meh_test_out '
-alias test.out='__meh_test_out '
+alias test.pattern='__meh_test_pat '
+alias test.match='__meh_test_pat '
 
 __meh_version() { echo 0.01; }
 __meh_usage()

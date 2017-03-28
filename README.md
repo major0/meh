@@ -26,12 +26,22 @@ My Eleventh Hour (meh) is a test-automation tool written in POSIX shell.
 
 ## Installation
 
-Copy the 'meh' script into your project and start writting tests in `tests/`
-directory.
+ 1. Copy the 'meh' script into your project.
+ 2. Make a `tests` directory in the top of your project.
+ 3. Add tests to the newly created tests directory. (e.g. `${topdir}/tests/test1.t`)
 
 By default `meh` will process all tests found in a given directory (and sub
-directories).  To inhibit this behavior one can force specific test orders or
-test conditions by the addition of a `control` file in a given directory.
+directories):
+
+```
+$ ls tests/*.t
+tests/test1.t
+tests/test2.t
+tests/test3.t
+```
+
+To inhibit this behavior one can force specific test orders or test conditions
+by the addition of a `control` file in a given directory.
 
 ```
 cat tests/__control__.t
@@ -44,11 +54,18 @@ test.dir nesting
 test.dir depends
 
 test.command 'Success if error' 1 sh -c 'false'
-test.output 'Regex pattern matching' '[a-z0-9]' echo 'abc123'
+test.pattern 'Regex pattern matching' '[a-z0-9]' echo 'abc123'
 
 my_custom_func() { :; }
 test.command 'Custom function' 0 my_custom_func
 ```
+
+## Test conditions
+
+ * `test.command <test description> <return status> <command> <args> ...`
+ * `test.pattern <test description> <regexp> <command <args> ...`
+ * `test.dir <path>`
+
 
 ## License
 
